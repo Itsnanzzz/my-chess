@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Catur Online</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.0/socket.io.min.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css">
+</head>
+
+<body class="bg-gray-100 dark:bg-gray-900 min-h-screen flex items-center justify-center transition-colors duration-300">
+    <div class="container mx-auto p-4 flex flex-col md:flex-row gap-6 max-w-6xl">
+        <div id="board" class="w-full max-w-[400px] md:max-w-[500px] mx-auto"></div>
+        <div
+            class="w-full max-w-[400px] md:max-w-[300px] bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg transition-colors duration-300">
+            <div class="text-lg font-bold mb-4 text-gray-800 dark:text-gray-200" id="status">Menunggu koneksi...</div>
+            <div class="text-sm mb-4 text-gray-600 dark:text-gray-400" id="connectionStatus">Belum terhubung</div>
+            <div class="mb-4">
+                <input id="gameIdInput" type="text" placeholder="Masukkan ID Permainan"
+                    class="w-full p-2 border rounded dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600">
+                <button onclick="createGame()"
+                    class="w-full bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded mt-2 transition-colors duration-200">Buat
+                    Permainan</button>
+                <button onclick="joinGame()"
+                    class="w-full bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded mt-2 transition-colors duration-200">Gabung
+                    Permainan</button>
+            </div>
+            <button onclick="resetGame()"
+                class="w-full bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded mb-2 transition-colors duration-200">Reset
+                Permainan</button>
+            <button onclick="toggleMoveHistory()"
+                class="w-full bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded mb-4 transition-colors duration-200"
+                id="toggleHistoryBtn">Tampilkan Riwayat</button>
+            <div class="move-history hidden max-h-96 overflow-y-auto" id="moveHistoryContainer">
+                <h3 class="text-lg font-semibold mb-2 text-gray-800 dark:text-gray-200">Riwayat Langkah</h3>
+                <ul id="moveHistory" class="text-gray-700 dark:text-gray-300"></ul>
+            </div>
+            <span class="text-sm text-gray-500 dark:text-gray-400">
+                Develop by Itsnanzzz Inc.
+            </span>
+        </div>
+    </div>
+
+    <script>
+        // Inisialisasi papan catur dan permainan
+        var board = null;
+        var game = new Chess();
+        var $status = $('#status');
+        var $connectionStatus = $('#connectionStatus');
+        var $moveHistory = $('#moveHistory');
+        var $moveHistoryContainer = $('#moveHistoryContainer');
+        var socket = io('http://localhost:3000');
+        var playerColor = null;
+        var gameId = null;
+
+        // Konfigurasi papan catur
+        var config = {
+            draggable: true,
+            position: 'start',
+            onDragStart: onDragStart,
+            onDrop: onDrop,
+            onSnapEnd: onSnapEnd,
+            pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
+        };
+        board = Chessboard('board', config);
+
+        // Socket event handlers
+        socket.on('connect', () => {
+            $connectionStatus.text('Terhubung ke server').removeClass('text-red-500').addClass('text-green-500');
+        });
+
+        socket.on('gameCreated', (data) => {
+            gameId = data.gameId;
+            playerColor = 'w';
+            $status.text('Permainan dibuat! ID: ' + gameId + '. Anda Putih. Menunggu lawan...');
+            $connectionStatus.text('Menunggu lawan bergabung');
+        });
+
+        socket.on('playerColor', (data) => {
+            gameId = data.gameId;
+            playerColor = data.color;
+            $status.text('Permainan dimulai! Anda ' + (playerColor === 'w' ? 'Putih' : 'Hitam'));
+            updateStatus();
+        });
+
+        socket.on('opponentReady', (data) => {
+            $connectionStatus.text('Lawan terhubung').removeClass('text-red-500').addClass('text-green-500');
+        });
+
+
+        socket.on('opponentMove', (data) => {
+            game.move(data.move);
+            board.position(game.fen());
+            updateMoveHistory();
+            updateStatus();
+        });
+
+        socket.on('opponentDisconnected', () => {
+            $connectionStatus.text('Lawan terputus').removeClass('text-green-500').addClass('text-red-500');
+            $status.text('Lawan terputus. Permainan dihentikan.');
+        });
+
+        socket.on('error', (data) => {
+            alert(data.message);
+        });
+
+        // Fungsi untuk memulai drag
+        function onDragStart(source, piece, position, orientation) {
+            if (game.game_over() || !gameId || !playerColor) return false;
+            if ((game.turn() === 'w' && piece.search(/^b/) !== -1) ||
+                (game.turn() === 'b' && piece.search(/^w/) !== -1) ||
+                (game.turn() !== playerColor)) {
+                return false;
+            }
+        }
+
+        // Fungsi saat bidak di-drop
+        function onDrop(source, target) {
+            var move = game.move({
+                from: source,
+                to: target,
+                promotion: 'q'
+            });
+            if (move === null) return 'snapback';
+            socket.emit('move', { gameId: gameId, move: move });
+            updateMoveHistory();
+            updateStatus();
+        }
+
+        // Fungsi saat bidak selesai di-snap
+        function onSnapEnd() {
+            board.position(game.fen());
+        }
+
+        // Fungsi untuk update status permainan
+        function updateStatus() {
+            if (!gameId) {
+                $status.text('Masukkan atau buat ID permainan untuk memulai');
+                return;
+            }
+            var status = '';
+            var moveColor = 'Putih';
+            if (game.turn() === 'b') {
+                moveColor = 'Hitam';
+            }
+            if (game.in_checkmate()) {
+                status = 'Permainan selesai, ' + moveColor + ' dalam sekakmat.';
+            } else if (game.in_draw()) {
+                status = 'Permainan selesai, remis.';
+            } else {
+                status = 'Giliran: ' + moveColor;
+                if (game.in_check()) {
+                    status += ', dalam sekak';
+                }
+            }
+            $status.text(status);
+        }
+
+        // Fungsi untuk update riwayat langkah
+        function updateMoveHistory() {
+            var history = game.history({ verbose: true });
+            $moveHistory.empty();
+            for (var i = 0; i < history.length; i += 2) {
+                var movePair = `<li class="py-2 border-b border-gray-200 dark:border-gray-700">${i / 2 + 1}. ${history[i].san}`;
+                if (history[i + 1]) {
+                    movePair += ` ${history[i + 1].san}`;
+                }
+                movePair += '</li>';
+                $moveHistory.append(movePair);
+            }
+            $moveHistoryContainer.scrollTop($moveHistoryContainer[0].scrollHeight);
+        }
+
+        // Fungsi untuk membuat permainan
+        function createGame() {
+            socket.emit('createGame');
+        }
+
+        // Fungsi untuk bergabung ke permainan
+        function joinGame() {
+            var inputGameId = $('#gameIdInput').val().trim();
+            if (!inputGameId) {
+                alert('Masukkan ID permainan!');
+                return;
+            }
+            socket.emit('joinGame', { gameId: inputGameId });
+        }
+
+        // Fungsi untuk reset permainan
+        function resetGame() {
+            if (!gameId) return;
+            game.reset();
+            board.position('start');
+            socket.emit('resetGame', { gameId: gameId });
+            $moveHistory.empty();
+            updateStatus();
+        }
+
+        // Fungsi untuk toggle riwayat langkah
+        function toggleMoveHistory() {
+            $moveHistoryContainer.toggleClass('hidden');
+            var isHidden = $moveHistoryContainer.hasClass('hidden');
+            $('#toggleHistoryBtn').text(isHidden ? 'Tampilkan Riwayat' : 'Sembunyikan Riwayat');
+        }
+
+        // Inisialisasi status awal
+        updateStatus();
+    </script>
+</body>
+
+</html>
